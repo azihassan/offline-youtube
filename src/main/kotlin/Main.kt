@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
 import kotlinx.coroutines.*
+import java.io.FileOutputStream
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -36,6 +37,9 @@ fun App(videos: List<Video>) {
                 System.out.println("Downloaded ${html.length} bytes of HTML")
                 val extractor = YoutubeVideoURLExtractor(html)
                 System.out.println("Downloading ${extractor.getURL(18)} to ${location}")
+                download(extractor.getURL(18), location, { read, size ->
+                    System.out.printf("\r%.2f / %.2f MB", read / 1024.0 / 1024.0, size / 1024.0 / 1024.0)
+                })
             })
             VideoListing(videos, {
                 System.out.println("Clicked on ${it.title}")
@@ -129,3 +133,26 @@ data class Video(
     val location: String,
     val downloadedAt: LocalDateTime
 )
+
+fun download(sourcePath: String, destinationPath: String, progressCallback: (Long, Long) -> Unit) {
+    val client = HttpClient.newHttpClient()
+    val request = HttpRequest.newBuilder()
+        .uri(URI.create(sourcePath))
+        .build()
+    val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
+    val size = response.headers().firstValue("Content-Length").map { it.toLong() }.orElse(0L)
+    val stream = response.body()
+
+    val buffer = ByteArray(8192)
+    var read = 0L
+    val out = FileOutputStream(destinationPath)
+    while(true) {
+        val length = stream.read(buffer)
+        if(length <= 0) {
+            break
+        }
+        read += length
+        out.write(buffer)
+        progressCallback(read, size)
+    }
+}
