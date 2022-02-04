@@ -18,4 +18,18 @@ class YoutubeVideoURLExtractorTest {
             extractor.getURL(22)
         )
     }
+
+    @Test
+    fun shouldParseYoutubeID() {
+        val html = Paths.get("src", "test", "resources", "zoz.html").readText()
+        val extractor = YoutubeVideoURLExtractor(html)
+        assertEquals("sif2JVDhZrQ", extractor.getID())
+    }
+
+    @Test
+    fun shouldParseYoutubeVideoTitle() {
+        val html = Paths.get("src", "test", "resources", "zoz.html").readText()
+        val extractor = YoutubeVideoURLExtractor(html)
+        assertEquals("اللوبيا المغربية ديال دار سهلة و بنينة سخونة و حنينة", extractor.getTitle())
+    }
 }

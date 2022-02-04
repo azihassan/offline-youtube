@@ -13,60 +13,53 @@ import androidx.compose.material.Button
 import androidx.compose.material.Text
 import androidx.compose.material.TextField
 import androidx.compose.runtime.*
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.application
+import downloadAsString
+import downloadToFile
 import kotlinx.coroutines.*
-import java.io.FileOutputStream
-import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
+import java.nio.file.Paths
 import java.time.LocalDateTime
 
 @Composable
 @Preview
-fun App(videos: List<Video>) {
+fun App(videos: SnapshotStateList<Video>) {
     DesktopMaterialTheme {
         Column {
             DownloadForm({ url, location ->
                 val html = downloadAsString(url)
                 System.out.println("Downloaded ${html.length} bytes of HTML")
                 val extractor = YoutubeVideoURLExtractor(html)
-                System.out.println("Downloading ${extractor.getURL(18)} to ${location}")
-                download(extractor.getURL(18), location, { read, size ->
-                    System.out.printf("\r%.2f / %.2f MB", read / 1024.0 / 1024.0, size / 1024.0 / 1024.0)
-                })
+                val fileURL = extractor.getURL(18)
+                val title = extractor.getTitle()
+                val path = Paths.get(location, "$title-${extractor.getID()}.mp4")
+                val video = Video(url, fileURL, title, path.toString(), LocalDateTime.now())
+
+                videos.add(video)
+                System.out.println("Queued ${video.originalURL}")
             })
             VideoListing(videos, {
                 System.out.println("Clicked on ${it.title}")
-            })
+                Runtime.getRuntime().exec(arrayOf("gnome-mpv", it.location))
+            }) { video, progressCallback ->
+                System.out.println("Downloading ${video.originalURL} to ${video.location}")
+                downloadToFile(video.fileURL, video.originalURL, video.location, progressCallback)
+            }
         }
     }
 }
 
 fun main() = application {
+    val videos = remember { mutableStateListOf<Video>() }
 
-    val videos = listOf(
-        Video("https://www.youtube.com/watch?v=3Vx1Z2Y-ZVA", "", "Video #1", "/home/tux/Videos/1.mp4", LocalDateTime.now()),
-        Video("https://www.youtube.com/watch?v=MCpl74MsfLE", "", "Video #2", "/home/tux/Videos/2.mp4", LocalDateTime.now()),
-        Video("https://www.youtube.com/watch?v=UqW42_8kn0s", "", "Video #3", "/home/tux/Videos/3.mp4", LocalDateTime.now()),
-        Video("https://www.youtube.com/watch?v=4h2-l68CTmY", "", "Video #4", "/home/tux/Videos/4.mp4", LocalDateTime.now())
-    )
     Window(onCloseRequest = ::exitApplication, title = "Youtube Offline") {
         App(videos = videos)
     }
-}
-
-fun downloadAsString(url: String): String {
-    val client = HttpClient.newHttpClient()
-    val request= HttpRequest.newBuilder()
-        .uri(URI.create(url))
-        .build()
-    return client.send(request, HttpResponse.BodyHandlers.ofString()).body()
 }
 
 @Composable
@@ -83,13 +76,19 @@ fun DownloadForm(onDownload: suspend (url: String, location: String) -> Unit) {
                 Text("URL")
             })
             Button(enabled = !isLoading, onClick = {
-                //runBlocking {
-                    CoroutineScope(Dispatchers.IO).launch {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
                         isLoading = true
-                        onDownload(url, location)
-                        isLoading = false
+                        try {
+                            onDownload(url, location)
+                        } catch(e: Exception) {
+                            System.out.println("Failed to download URL : ${e.message}")
+                            e.printStackTrace()
+                        } finally {
+                            isLoading = false
+                        }
                     }
-                //}
+                }
             }) {
                 Text("Download")
             }
@@ -110,49 +109,58 @@ fun DownloadForm(onDownload: suspend (url: String, location: String) -> Unit) {
 }
 
 @Composable
-fun VideoListing(videos: List<Video>, onVideoClick: (video: Video) -> Unit) {
+fun VideoListing(
+    videos: SnapshotStateList<Video>,
+    onVideoClick: (video: Video) -> Unit,
+    onVideoDownload: suspend (video: Video, progressCallback: suspend (Long, Long) -> Unit) -> Unit
+) {
     Column {
         videos.forEach {
-            VideoEntry(it, onVideoClick)
+            VideoEntry(it, onVideoClick, onVideoDownload)
         }
     }
 }
 
 @Composable
-fun VideoEntry(video: Video, onVideoClick: (video: Video) -> Unit) {
+fun VideoEntry(
+    video: Video,
+    onVideoClick: (video: Video) -> Unit,
+    onVideoDownload: suspend (video: Video, progressCallback: suspend (Long, Long) -> Unit) -> Unit
+) {
+    var isDownloading by remember { mutableStateOf(false) }
+    var readInMegaBytes by remember { mutableStateOf(0.0) }
+    var sizeInMegaBytes by remember { mutableStateOf(0.0) }
+    val scope = rememberCoroutineScope()
+    var downloadJob: Job? = null
+
+    fun hasFinishedDownloading() = readInMegaBytes >= sizeInMegaBytes
+    fun formatProgress(readInMegaBytes: Double, sizeInMegaBytes: Double) = String.format("%.2f / %.2f MB", readInMegaBytes, sizeInMegaBytes)
+
     Row(Modifier.border(1.dp, Color.LightGray, RectangleShape).then(Modifier.padding(5.dp)).then(Modifier.clickable { onVideoClick(video) })) {
         Text(video.title)
         Text(video.downloadedAt.toString())
-    }
-}
+        Text(if(isDownloading) formatProgress(readInMegaBytes, sizeInMegaBytes) else "Pending")
 
-data class Video(
-    val originalUrl: String,
-    val url: String,
-    val title: String,
-    val location: String,
-    val downloadedAt: LocalDateTime
-)
+        Button(enabled = isDownloading && !hasFinishedDownloading(), onClick = {
+            downloadJob!!.cancel()
+        }) { Text("Cancel") }
 
-fun download(sourcePath: String, destinationPath: String, progressCallback: (Long, Long) -> Unit) {
-    val client = HttpClient.newHttpClient()
-    val request = HttpRequest.newBuilder()
-        .uri(URI.create(sourcePath))
-        .build()
-    val response = client.send(request, HttpResponse.BodyHandlers.ofInputStream())
-    val size = response.headers().firstValue("Content-Length").map { it.toLong() }.orElse(0L)
-    val stream = response.body()
-
-    val buffer = ByteArray(8192)
-    var read = 0L
-    val out = FileOutputStream(destinationPath)
-    while(true) {
-        val length = stream.read(buffer)
-        if(length <= 0) {
-            break
+        Button(enabled = !isDownloading || hasFinishedDownloading(), onClick = {
+            isDownloading = true
+            downloadJob = scope.launch {
+                withContext(Dispatchers.IO) {
+                    onVideoDownload(video, { read, size ->
+                        withContext(Dispatchers.IO) {
+                            System.out.printf("\r%.2f / %.2f MB", read / 1024.0 / 1024.0, size / 1024.0 / 1024.0)
+                            readInMegaBytes = read / 1024.0 / 1024.0
+                            sizeInMegaBytes = size / 1024.0 / 1024.0
+                        }
+                    })
+                }
+            }
+        }) {
+            Text("Download")
         }
-        read += length
-        out.write(buffer)
-        progressCallback(read, size)
     }
 }
+
