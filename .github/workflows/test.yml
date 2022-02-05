@@ -1,0 +1,24 @@
+name: Run tests
+on: push
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - uses: fwilhe2/setup-kotlin@main 
+            - uses: fwilhe2/setup-kotlin@main 
+            - uses: gradle/gradle-build-action@v2
+
+            - name: Run tests
+              run: ./gradlew test
+
+            - name: Generate test reports
+              run: ./gradlew jacocoTestReport
+
+            - uses: actions/upload-artifact@v2
+              name: Upload test reports
+              with:
+                  name: test-report.zip
+                  path: build/reports/
+
+

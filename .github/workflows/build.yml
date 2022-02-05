@@ -1,0 +1,20 @@
+name: Build JAR
+on: push
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v2
+            - uses: fwilhe2/setup-kotlin@main 
+            - uses: fwilhe2/setup-kotlin@main 
+            - uses: gradle/gradle-build-action@v2
+
+            - name: Build JAR
+              run: ./gradlew packageUberJarForCurrentOS
+
+            - uses: actions/upload-artifact@v2
+              name: Upload artifact
+              with:
+                  name: youtube-offline-linux-x64-1.0.0.jar
+                  path: build/compose/jars/youtube-offline-linux-x64-1.0.0.jar
+
